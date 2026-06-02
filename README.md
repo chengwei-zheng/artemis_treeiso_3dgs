@@ -61,7 +61,7 @@ This tool relies on the cut-pursuit algorithm, please also consider citing:
 ## 1. Preprocessing requirements
 
 - **Noise Removal:** Clean your TLS data to remove noise (e.g., using CloudCompare with a Sober filter, NN=10, std=1).
-- **Decimation:** Decimate the point cloud to a reasonable resolution (approximately 2 cm).
+- **Decimation:** Decimate the point cloud to a reasonable resolution (approximately 2 cm).
 - **Ground Points:** Remove ground points before running tree isolation.
 
 ## 2. Matlab Version
