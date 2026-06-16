@@ -11,14 +11,14 @@ from skimage import draw
 PR_REG_STRENGTH1 = 1.0  # lambda1
 PR_MIN_NN1 = 5  # K1: key parameter
 
-PR_REG_STRENGTH2 = 5.0  # lambda2: key parameter
-PR_MIN_NN2 = 10  # K2: key parameter
+PR_REG_STRENGTH2 = 5.0  # lambda2: key parameter [5.0 for forest / 15.0 default]
+PR_MIN_NN2 = 10  # K2: key parameter [10.0 for forest / 20.0 default / 40.0 for orchard]
 
 PR_DECIMATE_RES1 = 0.05  # For speed optimization
 PR_DECIMATE_RES2 = 0.1  # For speed optimization
 PR_MAX_GAP = 2.0  # Max assumed point gap within a tree due to occlusion
 
-PR_REL_HEIGHT_LENGTH_RATIO = 0.5  # rho
+PR_REL_HEIGHT_LENGTH_RATIO = 0.5  # rho [0.5 for forest]
 PR_VERTICAL_WEIGHT = 0.5  # w
 PR_MIN_NN3 = 20  # trivial
 PR_SCORE_CANDIDATE_THRESH = 0.7  # No need to change

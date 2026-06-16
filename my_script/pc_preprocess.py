@@ -6,6 +6,21 @@ import numpy as np
 import open3d as o3d
 
 
+def read_ply_opacity(path):
+    """Read opacity field from PLY file. Returns None if field absent or unreadable."""
+    try:
+        from plyfile import PlyData
+        plydata = PlyData.read(str(path))
+        vertex = plydata['vertex']
+        if 'opacity' in vertex.data.dtype.names:
+            return np.array(vertex['opacity'], dtype=np.float32)
+    except ImportError:
+        print("Warning: plyfile not installed, skipping opacity filter")
+    except Exception as e:
+        print(f"Warning: could not read opacity from PLY: {e}")
+    return None
+
+
 def load_las(path):
     import laspy
     las = laspy.read(path)
@@ -50,11 +65,11 @@ def save_ply_as_laz(pcd, out_path):
     out.write(str(out_path))
 
 
-def remove_ground_csf(pcd, cloth_resolution, class_threshold, rigidness, export_cloth=False):
+def remove_ground_csf(pcd, cloth_resolution, ground_threshold, rigidness, export_cloth=False):
     import CSF
     csf = CSF.CSF()
     csf.params.cloth_resolution = cloth_resolution
-    csf.params.class_threshold = class_threshold
+    csf.params.class_threshold = ground_threshold
     csf.params.rigidness = rigidness
     csf.params.bSloopSmooth = False
     csf.params.interations = 500
@@ -62,7 +77,7 @@ def remove_ground_csf(pcd, cloth_resolution, class_threshold, rigidness, export_
     csf.setPointCloud(np.asarray(pcd.points))
     ground_idx = CSF.VecInt()
     non_ground_idx = CSF.VecInt()
-    csf.do_filtering(ground_idx, non_ground_idx)
+    csf.do_filtering(ground_idx, non_ground_idx, exportCloth=False)
 
     cloth_data = csf.do_cloth_export() if export_cloth else None
 
@@ -111,7 +126,7 @@ def main():
     #
     #   CSF parameters (for --remove-ground):
     #     --ground-resolution  ground mesh size in meters; smaller = more terrain detail, slower (default: 0.5)
-    #     --class-threshold    distance threshold to classify as ground (default: 0.5)
+    #     --ground-threshold   distance threshold to classify as ground (default: 0.5)
     #     --rigidness          1=mountainous, 2=complex, 3=flat terrain (default: 3)
     #
     #   SOR parameters (for noise removal):
@@ -133,8 +148,8 @@ def main():
                         help="Remove ground points using CSF before noise filtering")
     parser.add_argument("--ground-resolution", type=float, default=0.5,
                         help="CSF ground mesh resolution in meters (default: 0.5)")
-    parser.add_argument("--class-threshold", type=float, default=0.2,
-                        help="CSF distance threshold for ground classification (default: 0.2)")
+    parser.add_argument("--ground-threshold", type=float, default=0.2,
+                        help="CSF point-to-cloth distance threshold for ground classification (default: 0.2)")
     parser.add_argument("--rigidness", type=int, default=3, choices=[1, 2, 3],
                         help="CSF rigidness: 1=mountainous, 2=complex, 3=flat (default: 3)")
     parser.add_argument("--save-ground", action="store_true",
@@ -147,6 +162,10 @@ def main():
                         help="SOR number of neighbors (default: 10)")
     parser.add_argument("--std", type=float, default=1.0,
                         help="SOR std ratio threshold (default: 1.0)")
+
+    # opacity filter (PLY only)
+    parser.add_argument("--opacity-threshold", type=float, default=0.5,
+                        help="Remove PLY points with opacity < threshold (default: 0.5; set to 0 to disable)")
 
     # downsampling
     parser.add_argument("--downsample", type=int, default=1, metavar="X",
@@ -168,9 +187,13 @@ def main():
 
     if suffix in (".las", ".laz"):
         pcd, las = load_las(in_path)
+        opacity = None
     elif suffix == ".ply":
         pcd = o3d.io.read_point_cloud(str(in_path))
         las = None
+        opacity = read_ply_opacity(in_path)
+        if opacity is not None:
+            print(f"Found opacity field ({len(opacity)} values)")
     else:
         sys.exit(f"Error: unsupported format '{suffix}', use .las/.laz/.ply")
 
@@ -184,11 +207,12 @@ def main():
     active_idx = list(range(len(pcd.points)))
     ground_idx = []
     noise_idx = []
+    opacity_removed_idx = []
     downsample_removed_idx = []
 
     if args.remove_ground:
         non_ground, ground_mesh = remove_ground_csf(
-            pcd, args.ground_resolution, args.class_threshold, args.rigidness,
+            pcd, args.ground_resolution, args.ground_threshold, args.rigidness,
             export_cloth=args.save_ground,
         )
         non_ground_set = set(non_ground)
@@ -209,6 +233,17 @@ def main():
         active_idx = [active_idx[i] for i in sor_ind]
         pcd = pcd.select_by_index(sor_ind)
 
+    if opacity is not None and args.opacity_threshold > 0:
+        active_opacity = opacity[np.array(active_idx)]
+        keep_mask = active_opacity >= args.opacity_threshold
+        keep_local = np.where(keep_mask)[0]
+        removed_local = np.where(~keep_mask)[0]
+        opacity_removed_idx = [active_idx[i] for i in removed_local]
+        active_idx = [active_idx[i] for i in keep_local]
+        pcd = pcd.select_by_index(keep_local.tolist())
+        print(f"Opacity filter (>={args.opacity_threshold}): removed {len(opacity_removed_idx)}/{len(keep_mask)} points "
+              f"({100*len(opacity_removed_idx)/max(len(keep_mask),1):.1f}%)")
+
     print(f"Remaining: {len(pcd.points)} points")
 
     if args.downsample > 1:
@@ -225,7 +260,7 @@ def main():
         "ground_removal": {
             "enabled": args.remove_ground,
             "ground_resolution": args.ground_resolution,
-            "class_threshold": args.class_threshold,
+            "ground_threshold": args.ground_threshold,
             "rigidness": args.rigidness,
         } if args.remove_ground else {"enabled": False},
         "noise_removal": {
@@ -233,6 +268,10 @@ def main():
             "nn": args.nn,
             "std": args.std,
         } if not args.no_noise_removal else {"enabled": False},
+        "opacity_filter": {
+            "enabled": opacity is not None and args.opacity_threshold > 0,
+            "threshold": args.opacity_threshold,
+        },
         "downsample": args.downsample,
     }
     params_path = meta_dir / f"{out_path.stem}_params.json"
@@ -240,17 +279,19 @@ def main():
         json.dump(params, f, indent=2)
     print(f"Saved: {params_path}")
 
-    # Index map: maps original Gaussian indices into four categories for back-projection.
-    #   survivor    — points that passed all filters and entered treeiso; treeiso output[i] → Gaussian[survivor[i]]
+    # Index map: maps original Gaussian indices into categories for back-projection.
+    #   survivor    — points that passed all filters and entered treeiso
     #   ground      — removed by CSF ground filter
     #   noise       — removed by SOR noise filter
-    #   downsampled — passed ground/noise filters but removed by uniform downsampling; assign label via KNN from survivors
+    #   opacity_low — removed by opacity threshold filter; assign label via KNN from survivors
+    #   downsampled — removed by uniform downsampling; assign label via KNN from survivors
     index_map_path = meta_dir / f"{out_path.stem}_index_map.npz"
     np.savez(
         index_map_path,
         survivor=np.array(active_idx, dtype=np.int32),
         ground=np.array(ground_idx, dtype=np.int32),
         noise=np.array(noise_idx, dtype=np.int32),
+        opacity_low=np.array(opacity_removed_idx, dtype=np.int32),
         downsampled=np.array(downsample_removed_idx, dtype=np.int32),
     )
     print(f"Saved: {index_map_path}")
